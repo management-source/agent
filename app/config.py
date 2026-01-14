@@ -14,16 +14,12 @@ class Settings(BaseSettings):
     POLL_INTERVAL_SECONDS: int = 300
     REMINDER_INTERVAL_SECONDS: int = 900
     REMINDER_COOLDOWN_SECONDS: int = 3600
-    REMINDER_TO_EMAIL: str
+    REMINDER_TO_EMAIL: str | None = None
 
     OPENAI_API_KEY: str | None = None
     OPENAI_MODEL: str = "gpt-4o-mini"
 
-    def my_emails_list(self) -> List[str]:
-        return [e.strip().lower() for e in self.MY_EMAILS.split(",") if e.strip()]
-
     class Config:
-        env_file = ".env"
         extra = "ignore"
 
 
