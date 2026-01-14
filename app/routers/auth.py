@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import RedirectResponse, JSONResponse
 from sqlalchemy.orm import Session
 from datetime import datetime
@@ -24,27 +24,45 @@ def _flow() -> Flow:
         settings.GOOGLE_OAUTH_CLIENT_FILE,
         scopes=SCOPES,
     )
+    # Must be the Cloud Run https URL in production
     flow.redirect_uri = settings.GOOGLE_REDIRECT_URI
     return flow
 
 @router.get("/google/login")
 def google_login():
+    if not settings.GOOGLE_REDIRECT_URI:
+        raise HTTPException(status_code=500, detail="GOOGLE_REDIRECT_URI not configured")
+
     flow = _flow()
-    auth_url, _ = flow.authorization_url(
+    auth_url, state = flow.authorization_url(
         access_type="offline",
         include_granted_scopes="true",
         prompt="consent",
     )
+    # state is generated for CSRF protection; you can store it in a cookie/session later if desired
     return RedirectResponse(auth_url)
 
 @router.get("/google/callback")
-def google_callback(code: str, db: Session = Depends(get_db)):
+def google_callback(request: Request, db: Session = Depends(get_db)):
+    # Google can return ?error=access_denied etc.
+    err = request.query_params.get("error")
+    if err:
+        raise HTTPException(status_code=400, detail=f"Google OAuth error: {err}")
+
+    code = request.query_params.get("code")
+    if not code:
+        raise HTTPException(status_code=400, detail="Missing code")
+
     flow = _flow()
-    flow.fetch_token(code=code)
+
+    try:
+        flow.fetch_token(code=code)
+    except Exception as e:
+        # This is where redirect_uri_mismatch usually surfaces
+        raise HTTPException(status_code=400, detail=f"Token exchange failed: {repr(e)}")
 
     creds: Credentials = flow.credentials
 
-    # Upsert single token row
     token = db.query(OAuthToken).filter(OAuthToken.provider == "google").first()
     scopes_csv = ",".join(creds.scopes or [])
 
@@ -64,7 +82,7 @@ def google_callback(code: str, db: Session = Depends(get_db)):
         db.add(token)
     else:
         token.access_token = creds.token
-        # refresh_token may be None on subsequent auths; keep existing if missing
+        # IMPORTANT: do NOT overwrite refresh token with None
         if creds.refresh_token:
             token.refresh_token = creds.refresh_token
         token.token_uri = creds.token_uri
