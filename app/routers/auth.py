@@ -1,7 +1,7 @@
+from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import RedirectResponse, JSONResponse
 from sqlalchemy.orm import Session
-from datetime import datetime
 
 from google_auth_oauthlib.flow import Flow
 from google.oauth2.credentials import Credentials
@@ -20,31 +20,39 @@ SCOPES = [
 ]
 
 def _flow() -> Flow:
-    flow = Flow.from_client_secrets_file(
-        settings.GOOGLE_OAUTH_CLIENT_FILE,
-        scopes=SCOPES,
-    )
-    # Must be the Cloud Run https URL in production
+    if not settings.GOOGLE_CLIENT_ID or not settings.GOOGLE_CLIENT_SECRET:
+        raise HTTPException(status_code=500, detail="Google OAuth client not configured")
+    if not settings.GOOGLE_REDIRECT_URI:
+        raise HTTPException(status_code=500, detail="GOOGLE_REDIRECT_URI not configured")
+
+    client_config = {
+        "web": {
+            "client_id": settings.GOOGLE_CLIENT_ID,
+            "client_secret": settings.GOOGLE_CLIENT_SECRET,
+            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+            "token_uri": "https://oauth2.googleapis.com/token",
+            "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+            # Google library may reference these; keep for completeness
+            "redirect_uris": [settings.GOOGLE_REDIRECT_URI],
+        }
+    }
+
+    flow = Flow.from_client_config(client_config, scopes=SCOPES)
     flow.redirect_uri = settings.GOOGLE_REDIRECT_URI
     return flow
 
 @router.get("/google/login")
 def google_login():
-    if not settings.GOOGLE_REDIRECT_URI:
-        raise HTTPException(status_code=500, detail="GOOGLE_REDIRECT_URI not configured")
-
     flow = _flow()
-    auth_url, state = flow.authorization_url(
+    auth_url, _ = flow.authorization_url(
         access_type="offline",
         include_granted_scopes="true",
         prompt="consent",
     )
-    # state is generated for CSRF protection; you can store it in a cookie/session later if desired
     return RedirectResponse(auth_url)
 
 @router.get("/google/callback")
 def google_callback(request: Request, db: Session = Depends(get_db)):
-    # Google can return ?error=access_denied etc.
     err = request.query_params.get("error")
     if err:
         raise HTTPException(status_code=400, detail=f"Google OAuth error: {err}")
@@ -58,7 +66,6 @@ def google_callback(request: Request, db: Session = Depends(get_db)):
     try:
         flow.fetch_token(code=code)
     except Exception as e:
-        # This is where redirect_uri_mismatch usually surfaces
         raise HTTPException(status_code=400, detail=f"Token exchange failed: {repr(e)}")
 
     creds: Credentials = flow.credentials
@@ -72,8 +79,8 @@ def google_callback(request: Request, db: Session = Depends(get_db)):
             access_token=creds.token,
             refresh_token=creds.refresh_token,
             token_uri=creds.token_uri,
-            client_id=creds.client_id,
-            client_secret=creds.client_secret,
+            client_id="env",          # do not store real id/secret in DB
+            client_secret="env",
             scopes=scopes_csv,
             expiry=creds.expiry,
             created_at=datetime.utcnow(),
@@ -82,16 +89,12 @@ def google_callback(request: Request, db: Session = Depends(get_db)):
         db.add(token)
     else:
         token.access_token = creds.token
-        # IMPORTANT: do NOT overwrite refresh token with None
         if creds.refresh_token:
             token.refresh_token = creds.refresh_token
         token.token_uri = creds.token_uri
-        token.client_id = creds.client_id
-        token.client_secret = creds.client_secret
         token.scopes = scopes_csv
         token.expiry = creds.expiry
         token.updated_at = datetime.utcnow()
 
     db.commit()
-
     return JSONResponse({"ok": True, "message": "Google account connected. You can now sync inbox."})
