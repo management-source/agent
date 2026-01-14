@@ -1,0 +1,281 @@
+let currentTab = "all";
+let currentAckThreadId = null;
+
+function openSettings() { alert("Settings (MVP): not implemented yet."); }
+function addQuery() { alert("Add Query (MVP): not implemented yet."); }
+
+function formatDate(dt) {
+    if (!dt) return "—";
+    try { return new Date(dt).toLocaleString(); } catch { return dt; }
+}
+
+function setTab(tab) {
+    currentTab = tab;
+    document.querySelectorAll(".tabbtn").forEach(btn => {
+        const isActive = btn.dataset.tab === tab;
+        btn.className = isActive
+            ? "tabbtn px-4 py-2 rounded-lg border bg-indigo-600 text-white"
+            : "tabbtn px-4 py-2 rounded-lg border bg-white";
+    });
+    loadTickets();
+}
+
+async function fetchNow() {
+    const btn = document.getElementById("fetchBtn");
+    btn.disabled = true;
+    btn.textContent = "Fetching...";
+
+    try {
+        const start = document.getElementById("startDate").value;
+        const end = document.getElementById("endDate").value;
+
+        const url = new URL("/autopilot/fetch-now", window.location.origin);
+        if (start) url.searchParams.set("start", start);
+        if (end) url.searchParams.set("end", end);
+
+        const r = await fetch(url.toString(), { method: "POST" });
+        const text = await r.text();
+        if (!r.ok) {
+            alert(`Fetch failed (${r.status}):\n\n${text}`);
+            return;
+        }
+        const j = JSON.parse(text);
+
+        document.getElementById("lastSync").textContent = new Date().toLocaleString();
+        await loadTickets();
+        console.log(j);
+    } catch (e) {
+        alert("Fetch failed: " + e);
+    } finally {
+        btn.disabled = false;
+        btn.textContent = "Fetch Now";
+    }
+}
+
+async function startAutopilot() {
+    const r = await fetch("/autopilot/start", { method: "POST" });
+    const t = await r.text();
+    if (!r.ok) { alert(`Start failed (${r.status}):\n\n${t}`); return; }
+    await refreshAutopilotStatus();
+}
+
+async function stopAutopilot() {
+    const r = await fetch("/autopilot/stop", { method: "POST" });
+    const t = await r.text();
+    if (!r.ok) { alert(`Stop failed (${r.status}):\n\n${t}`); return; }
+    await refreshAutopilotStatus();
+}
+
+async function refreshAutopilotStatus() {
+    try {
+        const r = await fetch("/autopilot/status");
+        const j = await r.json();
+        const running = !!j.running;
+
+        document.getElementById("autopilotStatus").textContent = running ? "Active" : "Stopped";
+        document.getElementById("statusDot").className = running
+            ? "h-2 w-2 rounded-full bg-green-500"
+            : "h-2 w-2 rounded-full bg-red-500";
+        document.getElementById("nextRun").textContent = j.next_run_time || "—";
+    } catch {
+        // ignore
+    }
+}
+
+function priorityBadge(p) {
+    const val = (p || "medium").toLowerCase();
+    if (val === "high") return `<span class="px-2 py-0.5 rounded-full text-xs bg-red-100 text-red-700 border">high</span>`;
+    if (val === "low") return `<span class="px-2 py-0.5 rounded-full text-xs bg-emerald-100 text-emerald-700 border">low</span>`;
+    return `<span class="px-2 py-0.5 rounded-full text-xs bg-amber-100 text-amber-700 border">medium</span>`;
+}
+
+function statusOptions(selected) {
+    const opts = [
+        ["PENDING", "Pending"],
+        ["IN_PROGRESS", "In Progress"],
+        ["RESPONDED", "Responded"],
+        ["NO_REPLY_NEEDED", "Reply Not Needed"]
+    ];
+    return opts.map(([v, label]) => `<option value="${v}" ${v === selected ? "selected" : ""}>${label}</option>`).join("");
+}
+
+function renderTicket(t) {
+    const card = document.createElement("div");
+    card.className = "bg-white rounded-xl shadow border p-5 flex items-start justify-between gap-4";
+
+    const due = t.due_at ? `Due: ${formatDate(t.due_at)}` : "Due: —";
+    const last = t.last_message_at ? `Last: ${formatDate(t.last_message_at)}` : "Last: —";
+
+    card.innerHTML = `
+    <div class="min-w-0 flex-1">
+      <div class="flex items-center gap-2">
+        <div class="font-semibold text-slate-900 truncate">${t.from_name || t.from_email || "(unknown sender)"}</div>
+        ${priorityBadge(t.priority)}
+        ${t.is_not_replied ? `<span class="px-2 py-0.5 rounded-full text-xs bg-orange-100 text-orange-700 border">Not Replied</span>` : ``}
+        ${t.is_unread ? `<span class="px-2 py-0.5 rounded-full text-xs bg-slate-100 text-slate-700 border">Unread</span>` : ``}
+      </div>
+
+      <div class="mt-1 text-slate-900 font-medium truncate">${t.subject || "(no subject)"}</div>
+      <div class="mt-1 text-sm text-slate-500 truncate">${t.from_email || ""}</div>
+      <div class="mt-2 text-sm text-slate-600">${t.snippet || ""}</div>
+
+      <div class="mt-3 flex flex-wrap gap-3 text-xs text-slate-500">
+        <div>${last}</div>
+        <div class="text-orange-700">${due}</div>
+      </div>
+
+      <div class="mt-4 flex flex-wrap gap-2">
+        <button class="px-3 py-2 rounded-lg border text-slate-700 hover:bg-slate-50" onclick="openThread('${t.thread_id}')">Open</button>
+        <button class="px-3 py-2 rounded-lg border text-slate-700 hover:bg-slate-50" onclick="openAckModal('${t.thread_id}')">Draft Ack</button>
+        ${t.from_email ? `<button class="px-3 py-2 rounded-lg border text-red-700 hover:bg-red-50" onclick="blacklistSender('${t.from_email}')">Blacklist Sender</button>` : ``}
+      </div>
+    </div>
+
+    <div class="flex flex-col items-end gap-2">
+      <select class="px-3 py-2 rounded-lg border bg-white"
+        onchange="updateStatus('${t.thread_id}', this.value)">
+        ${statusOptions(t.status)}
+      </select>
+    </div>
+  `;
+
+    return card;
+}
+
+async function loadTickets() {
+    const url = `/tickets?tab=${encodeURIComponent(currentTab)}&limit=50`;
+    const r = await fetch(url);
+    const data = await r.json();
+
+    const c = data.counts || {};
+    document.getElementById("countNotReplied").textContent = c.not_replied ?? 0;
+    document.getElementById("countPending").textContent = c.pending ?? 0;
+    document.getElementById("countInProgress").textContent = c.in_progress ?? 0;
+    document.getElementById("countResponded").textContent = c.responded ?? 0;
+    document.getElementById("countNoReplyNeeded").textContent = c.no_reply_needed ?? 0;
+
+    const list = document.getElementById("ticketList");
+    list.innerHTML = "";
+
+    (data.items || []).forEach(t => list.appendChild(renderTicket(t)));
+
+    if ((data.items || []).length === 0) {
+        list.innerHTML = `<div class="text-slate-600 text-sm">No tickets in this tab.</div>`;
+    }
+}
+
+async function updateStatus(threadId, status) {
+    await fetch(`/tickets/${threadId}/status`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status })
+    });
+    await loadTickets();
+}
+
+async function openThread(threadId) {
+    const modal = document.getElementById("threadModal");
+    const content = document.getElementById("threadContent");
+    const gmailLink = document.getElementById("gmailLink");
+
+    modal.classList.remove("hidden");
+    content.innerHTML = `<div class="text-sm text-slate-600">Loading thread…</div>`;
+
+    const r = await fetch(`/threads/${threadId}`);
+    const t = await r.text();
+    if (!r.ok) {
+        content.innerHTML = `<pre class="text-xs text-red-700 whitespace-pre-wrap">${t}</pre>`;
+        return;
+    }
+
+    const j = JSON.parse(t);
+    gmailLink.href = j.gmail_url || "#";
+
+    content.innerHTML = (j.messages || []).map(m => `
+    <div class="border rounded-xl p-4 bg-slate-50">
+      <div class="text-xs text-slate-500">${m.date || ""}</div>
+      <div class="text-sm"><span class="font-medium">From:</span> ${m.from || ""}</div>
+      <div class="text-sm"><span class="font-medium">To:</span> ${m.to || ""}</div>
+      <div class="text-sm"><span class="font-medium">Subject:</span> ${m.subject || ""}</div>
+      <div class="mt-2 text-sm text-slate-700 whitespace-pre-wrap">${(m.body || m.snippet || "").replaceAll("<", "&lt;")}</div>
+    </div>
+  `).join("");
+}
+
+function closeThreadModal() {
+    document.getElementById("threadModal").classList.add("hidden");
+}
+
+async function openAckModal(threadId) {
+    currentAckThreadId = threadId;
+    document.getElementById("ackModal").classList.remove("hidden");
+    document.getElementById("ackSubject").value = "";
+    document.getElementById("ackBody").value = "Loading draft…";
+    document.getElementById("sendAckBtn").disabled = true;
+
+    const r = await fetch(`/tickets/${threadId}/draft-ack`, { method: "POST" });
+    const t = await r.text();
+    if (!r.ok) {
+        document.getElementById("ackBody").value = t;
+        document.getElementById("sendAckBtn").disabled = true;
+        return;
+    }
+    const j = JSON.parse(t);
+    document.getElementById("ackSubject").value = j.subject || "";
+    document.getElementById("ackBody").value = j.body || "";
+    document.getElementById("sendAckBtn").disabled = false;
+}
+
+function closeAckModal() {
+    document.getElementById("ackModal").classList.add("hidden");
+    currentAckThreadId = null;
+}
+
+async function sendAckFromModal() {
+    if (!currentAckThreadId) return;
+    const subject = document.getElementById("ackSubject").value;
+    const body = document.getElementById("ackBody").value;
+
+    const btn = document.getElementById("sendAckBtn");
+    btn.disabled = true;
+    btn.textContent = "Sending...";
+
+    try {
+        const r = await fetch(`/tickets/${currentAckThreadId}/send-ack`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ subject, body, mark_as_responded: true })
+        });
+        const t = await r.text();
+        if (!r.ok) {
+            alert(`Send failed (${r.status}):\n\n${t}`);
+            return;
+        }
+        closeAckModal();
+        await loadTickets();
+        alert("Acknowledgment sent.");
+    } finally {
+        btn.disabled = false;
+        btn.textContent = "Send";
+    }
+}
+
+async function blacklistSender(email) {
+    if (!email) return;
+    if (!confirm(`Blacklist sender ${email}? Future tickets from this sender will be hidden.`)) return;
+
+    // Requires /blacklist endpoint. If you haven't added it yet, this will 404.
+    const r = await fetch(`/blacklist?email=${encodeURIComponent(email)}`, { method: "POST" });
+    const t = await r.text();
+    if (!r.ok) {
+        alert(`Blacklist failed (${r.status}):\n\n${t}`);
+        return;
+    }
+    await loadTickets();
+}
+
+window.addEventListener("load", async () => {
+    document.getElementById("lastSync").textContent = new Date().toLocaleString();
+    await refreshAutopilotStatus();
+    await loadTickets();
+});
