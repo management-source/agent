@@ -189,17 +189,90 @@ async function openThread(threadId) {
     }
 
     const j = JSON.parse(t);
-    gmailLink.href = j.gmail_url || "#";
+    gmailLink.href = j.gmail_url || j.gmail_thread_url || "#";
 
-    content.innerHTML = (j.messages || []).map(m => `
-    <div class="border rounded-xl p-4 bg-slate-50">
-      <div class="text-xs text-slate-500">${m.date || ""}</div>
-      <div class="text-sm"><span class="font-medium">From:</span> ${m.from || ""}</div>
-      <div class="text-sm"><span class="font-medium">To:</span> ${m.to || ""}</div>
-      <div class="text-sm"><span class="font-medium">Subject:</span> ${m.subject || ""}</div>
-      <div class="mt-2 text-sm text-slate-700 whitespace-pre-wrap">${(m.body || m.snippet || "").replaceAll("<", "&lt;")}</div>
-    </div>
-  `).join("");
+    const escapeHtml = (s) => (s || "")
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#39;");
+
+    const rewriteCid = (html, messageId) => {
+        if (!html) return "";
+        // Replace src="cid:..." or src='cid:...'
+        return html.replace(/src\s*=\s*(["'])cid:([^"'>\s]+)\1/gi, (m, q, cid) => {
+            const url = `/threads/${encodeURIComponent(threadId)}/messages/${encodeURIComponent(messageId)}/inline/${encodeURIComponent(cid)}`;
+            return `src=${q}${url}${q}`;
+        });
+    };
+
+    const renderMessage = (m, idx) => {
+        const hasHtml = !!m.body_html;
+        const msgId = m.id;
+        const safeText = escapeHtml(m.body_text || m.snippet || "");
+        const iframeId = `msg_iframe_${idx}`;
+        const btnId = `msg_toggle_${idx}`;
+        const html = hasHtml ? rewriteCid(m.body_html, msgId) : "";
+
+        return `
+        <div class="border rounded-xl p-4 bg-slate-50">
+          <div class="flex items-start justify-between gap-3">
+            <div>
+              <div class="text-xs text-slate-500">${escapeHtml(m.date || "")}</div>
+              <div class="text-sm"><span class="font-medium">From:</span> ${escapeHtml(m.from || "")}</div>
+              <div class="text-sm"><span class="font-medium">To:</span> ${escapeHtml(m.to || "")}</div>
+              <div class="text-sm"><span class="font-medium">Subject:</span> ${escapeHtml(m.subject || "")}</div>
+            </div>
+
+            ${hasHtml ? `
+              <button id="${btnId}" class="px-3 py-2 rounded-lg border text-slate-700 hover:bg-white" data-mode="html">
+                View HTML
+              </button>
+            ` : ``}
+          </div>
+
+          <div class="mt-3">
+            <div class="text-sm text-slate-700 whitespace-pre-wrap" data-mode="text">${safeText}</div>
+            ${hasHtml ? `
+              <div class="mt-3 hidden" data-mode="html">
+                <iframe id="${iframeId}" class="w-full rounded-lg border bg-white" style="height: 520px;" sandbox="allow-popups allow-forms" referrerpolicy="no-referrer"></iframe>
+              </div>
+            ` : ``}
+          </div>
+        </div>
+      `;
+    };
+
+    content.innerHTML = (j.messages || []).map((m, idx) => renderMessage(m, idx)).join("");
+
+    // Attach toggles and populate iframes AFTER insertion
+    (j.messages || []).forEach((m, idx) => {
+        if (!m.body_html) return;
+        const btn = document.getElementById(`msg_toggle_${idx}`);
+        const iframe = document.getElementById(`msg_iframe_${idx}`);
+        if (!btn || !iframe) return;
+
+        const html = rewriteCid(m.body_html, m.id);
+        iframe.srcdoc = html;
+
+        btn.addEventListener("click", () => {
+            const card = btn.closest(".border");
+            if (!card) return;
+            const textEl = card.querySelector('[data-mode="text"]');
+            const htmlWrap = card.querySelector('[data-mode="html"]');
+            const showing = htmlWrap && !htmlWrap.classList.contains("hidden");
+            if (showing) {
+                htmlWrap.classList.add("hidden");
+                if (textEl) textEl.classList.remove("hidden");
+                btn.textContent = "View HTML";
+            } else {
+                if (textEl) textEl.classList.add("hidden");
+                if (htmlWrap) htmlWrap.classList.remove("hidden");
+                btn.textContent = "View Text";
+            }
+        });
+    });
 }
 
 function closeThreadModal() {
