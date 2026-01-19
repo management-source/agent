@@ -8,6 +8,20 @@ from app.db import SessionLocal
 from app.models import ThreadTicket, TicketStatus
 from app.services.gmail_client import get_gmail_service, is_from_me, parse_email_address
 from app.models import BlacklistedSender
+import logging
+from app.services.gmail_client import get_gmail_service
+
+logger = logging.getLogger(__name__)
+
+def sync_inbox_threads(db):
+    try:
+        service = get_gmail_service(db)
+    except RuntimeError as e:
+        # Expected before OAuth is completed
+        if "Google is not connected" in str(e):
+            logger.info("Gmail sync skipped: Google account not connected yet.")
+            return
+        raise 
 
 def _get_header(headers: list[dict], name: str) -> str | None:
     for h in headers or []:
