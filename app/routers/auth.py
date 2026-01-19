@@ -19,6 +19,31 @@ SCOPES = [
     "https://www.googleapis.com/auth/gmail.modify",
 ]
 
+
+@router.get("/status")
+def auth_status(db: Session = Depends(get_db)):
+    """Lightweight status check for UI."""
+    token = db.query(OAuthToken).filter(OAuthToken.provider == "google").first()
+    return {
+        "connected": bool(token),
+        "provider": "google",
+        "has_refresh_token": bool(token and token.refresh_token),
+        "expiry": (token.expiry.isoformat() if token and token.expiry else None),
+        "scopes": (token.scopes.split(",") if token and token.scopes else []),
+    }
+
+
+@router.post("/google/disconnect")
+def google_disconnect(db: Session = Depends(get_db)):
+    """Disconnect Google by deleting stored OAuth token (MVP single-row store)."""
+    token = db.query(OAuthToken).filter(OAuthToken.provider == "google").first()
+    if token is None:
+        return {"ok": True, "message": "No Google connection found."}
+
+    db.delete(token)
+    db.commit()
+    return {"ok": True, "message": "Google account disconnected."}
+
 def _flow() -> Flow:
     if not settings.GOOGLE_CLIENT_ID or not settings.GOOGLE_CLIENT_SECRET:
         raise HTTPException(status_code=500, detail="Google OAuth client not configured")
@@ -97,4 +122,6 @@ def google_callback(request: Request, db: Session = Depends(get_db)):
         token.updated_at = datetime.utcnow()
 
     db.commit()
-    return JSONResponse({"ok": True, "message": "Google account connected. You can now sync inbox."})
+
+    # UX: return user to the UI after successful connection.
+    return RedirectResponse(url="/?connected=1")

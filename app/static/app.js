@@ -1,6 +1,65 @@
 let currentTab = "all";
 let currentAckThreadId = null;
 
+let googleConnected = false;
+
+async function refreshGoogleStatus() {
+    const btn = document.getElementById("googleBtn");
+    if (!btn) return;
+
+    btn.disabled = false;
+    try {
+        const r = await fetch("/auth/status");
+        if (!r.ok) {
+            // Most likely: OAuth not configured on server.
+            googleConnected = false;
+            btn.textContent = "Google OAuth not configured";
+            btn.className = "px-4 py-2 rounded-lg border text-slate-400 bg-slate-50 cursor-not-allowed";
+            btn.disabled = true;
+            return;
+        }
+
+        const j = await r.json();
+        googleConnected = !!j.connected;
+
+        if (googleConnected) {
+            btn.textContent = "Google Connected";
+            btn.className = "px-4 py-2 rounded-lg border bg-emerald-50 text-emerald-800 hover:bg-emerald-100";
+        } else {
+            btn.textContent = "Connect to Google";
+            btn.className = "px-4 py-2 rounded-lg border text-slate-700 hover:bg-slate-50";
+        }
+    } catch {
+        // If status check fails, keep button usable for login.
+        googleConnected = false;
+        btn.textContent = "Connect to Google";
+        btn.className = "px-4 py-2 rounded-lg border text-slate-700 hover:bg-slate-50";
+    }
+}
+
+async function googleConnectOrManage() {
+    if (!googleConnected) {
+        window.location.href = "/auth/google/login";
+        return;
+    }
+
+    const ok = confirm("Google is currently connected. Do you want to disconnect this account?");
+    if (!ok) return;
+
+    try {
+        const r = await fetch("/auth/google/disconnect", { method: "POST" });
+        const t = await r.text();
+        if (!r.ok) {
+            alert(`Disconnect failed (${r.status}):\n\n${t}`);
+            return;
+        }
+    } catch (e) {
+        alert("Disconnect failed: " + e);
+    } finally {
+        await refreshGoogleStatus();
+    }
+}
+
 function openSettings() { alert("Settings (MVP): not implemented yet."); }
 function addQuery() { alert("Add Query (MVP): not implemented yet."); }
 
@@ -349,6 +408,22 @@ async function blacklistSender(email) {
 
 window.addEventListener("load", async () => {
     document.getElementById("lastSync").textContent = new Date().toLocaleString();
+    await refreshGoogleStatus();
+
+    // Small UX: show a one-time confirmation after OAuth callback.
+    try {
+        const params = new URLSearchParams(window.location.search);
+        if (params.get("connected") === "1") {
+            // Remove the parameter so the alert does not repeat on refresh.
+            params.delete("connected");
+            const newUrl = window.location.pathname + (params.toString() ? `?${params.toString()}` : "");
+            window.history.replaceState({}, "", newUrl);
+            alert("Google account connected successfully.");
+        }
+    } catch {
+        // ignore
+    }
+
     await refreshAutopilotStatus();
     await loadTickets();
 });
